@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NAI 이미지 메타데이터 제거 → ZIP</title>
+<style>
+  :root{
+    color-scheme:dark;
+    --bg:#111216; --card:#1a1c22; --line:#30333d; --text:#f2f3f5;
+    --muted:#9da3af; --accent:#8f7cff; --ok:#6fd3a8; --warn:#f0c36a;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  }
+  .wrap{max-width:820px;margin:48px auto;padding:0 20px}
+  h1{font-size:25px;margin:0 0 8px}
+  .desc{color:var(--muted);line-height:1.65;margin:0 0 24px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:22px;margin-bottom:16px;
+  }
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  button,.fakeBtn{
+    appearance:none;border:0;border-radius:10px;padding:11px 16px;
+    font-weight:700;font-size:14px;cursor:pointer;
+  }
+  .primary{background:var(--accent);color:#fff}
+  .secondary{background:#292c34;color:var(--text);border:1px solid #3b3f49}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  input[type=file]{display:none}
+  .info{margin-top:16px;color:var(--muted);font-size:14px;line-height:1.7}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
+  .stat{background:#14161b;border:1px solid var(--line);border-radius:12px;padding:13px}
+  .stat b{display:block;font-size:20px;margin-top:3px}
+  .stat span{font-size:12px;color:var(--muted)}
+  .progress{
+    height:10px;background:#111318;border-radius:99px;overflow:hidden;margin-top:18px;
+    border:1px solid #292c34;
+  }
+  .bar{height:100%;width:0%;background:var(--accent);transition:width .12s}
+  #status{margin-top:10px;color:var(--muted);font-size:13px}
+  #log{
+    margin-top:14px;max-height:230px;overflow:auto;background:#111318;
+    border:1px solid var(--line);border-radius:10px;padding:12px;
+    font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+    white-space:pre-wrap;color:#c8ccd5;
+  }
+  .ok{color:var(--ok)}
+  .warn{color:var(--warn)}
+  .tiny{font-size:12px;color:var(--muted);line-height:1.65;margin-top:12px}
+  #downloadArea{display:none;margin-top:16px}
+  a.download{
+    display:inline-block;text-decoration:none;background:var(--ok);color:#0e1713;
+    font-weight:800;padding:11px 16px;border-radius:10px;
+  }
+  @media(max-width:600px){.stats{grid-template-columns:1fr}.wrap{margin-top:26px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>NAI 이미지 메타데이터 제거 → ZIP</h1>
+  <p class="desc">
+    폴더를 통째로 선택하면 PNG/JPG/JPEG/WebP의 메타데이터를 제거한 뒤
+    원래 폴더 구조와 파일명을 유지해서 ZIP으로 묶습니다.
+  </p>
+
+  <div class="card">
+    <div class="row">
+      <label class="fakeBtn primary" for="folderInput">📁 폴더 선택</label>
+      <input id="folderInput" type="file" webkitdirectory multiple
+             accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">
+      <button id="runBtn" class="secondary" disabled>메타 제거 + ZIP 만들기</button>
+      <button id="resetBtn" class="secondary" disabled>초기화</button>
+    </div>
+
+    <div class="info" id="folderInfo">아직 폴더를 선택하지 않았습니다.</div>
+
+    <div class="stats">
+      <div class="stat"><span>선택된 이미지</span><b id="countAll">0</b></div>
+      <div class="stat"><span>처리 완료</span><b id="countDone">0</b></div>
+      <div class="stat"><span>건너뜀/오류</span><b id="countSkip">0</b></div>
+    </div>
+
+    <div class="progress"><div class="bar" id="bar"></div></div>
+    <div id="status">대기 중</div>
+    <div id="downloadArea">
+      <a id="downloadLink" class="download" href="#">⬇ ZIP 다운로드</a>
+    </div>
+    <div id="log">준비됨.</div>
+
+    <p class="tiny">
+      • PNG: tEXt / zTXt / iTXt / eXIf / tIME 청크 제거<br>
+      • JPEG: EXIF/XMP(APP1), IPTC(APP13), Comment 제거<br>
+      • WebP: EXIF/XMP 청크 제거<br>
+      • 이미지 픽셀을 캔버스로 다시 그리지 않고 파일 구조에서 메타데이터만 제거합니다.<br>
+      • 브라우저 안에서만 처리하며 외부 서버로 이미지를 업로드하지 않습니다.<br>
+      • ZIP64는 지원하지 않으므로 4GB 초과 ZIP이나 65,535개 초과 파일은 피해주세요.
+    </p>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const folderInput = document.getElementById("folderInput");
+  const runBtn = document.getElementById("runBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const folderInfo = document.getElementById("folderInfo");
+  const countAll = document.getElementById("countAll");
+  const countDone = document.getElementById("countDone");
+  const countSkip = document.getElementById("countSkip");
+  const bar = document.getElementById("bar");
+  const status = document.getElementById("status");
+  const logEl = document.getElementById("log");
+  const downloadArea = document.getElementById("downloadArea");
+  const downloadLink = document.getElementById("downloadLink");
+
+  let files = [];
+  let downloadUrl = null;
+
+  const enc = new TextEncoder();
+
+  function log(msg) {
+    logEl.textContent += "\n" + msg;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function resetDownload() {
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    downloadUrl = null;
+    downloadArea.style.display = "none";
+    downloadLink.removeAttribute("href");
+  }
+
+  function extOf(name) {
+    const m = name.toLowerCase().match(/\.([^.]+)$/);
+    return m ? m[1] : "";
+  }
+
+  function isSupported(file) {
+    return ["png","jpg","jpeg","webp"].includes(extOf(file.name));
+  }
+
+  folderInput.addEventListener("change", () => {
+    resetDownload();
+    files = Array.from(folderInput.files || []).filter(isSupported);
+
+    const root = files[0]?.webkitRelativePath?.split("/")[0] || "선택 폴더";
+    folderInfo.innerHTML = `<b>${escapeHtml(root)}</b> · 이미지 ${files.length}개`;
+    countAll.textContent = files.length;
+    countDone.textContent = "0";
+    countSkip.textContent = "0";
+    bar.style.width = "0%";
+    status.textContent = files.length ? "처리 준비 완료" : "지원 이미지가 없습니다.";
+    logEl.textContent = files.length
+      ? `선택됨: ${root}\n지원 형식: PNG / JPG / JPEG / WebP`
+      : "지원되는 이미지가 없습니다.";
+    runBtn.disabled = !files.length;
+    resetBtn.disabled = false;
+  });
+
+  resetBtn.addEventListener("click", () => {
+    resetDownload();
+    files = [];
+    folderInput.value = "";
+    folderInfo.textContent = "아직 폴더를 선택하지 않았습니다.";
+    countAll.textContent = "0";
+    countDone.textContent = "0";
+    countSkip.textContent = "0";
+    bar.style.width = "0%";
+    status.textContent = "대기 중";
+    logEl.textContent = "준비됨.";
+    runBtn.disabled = true;
+    resetBtn.disabled = true;
+  });
+
+  runBtn.addEventListener("click", async () => {
+    if (!files.length) return;
+
+    resetDownload();
+    runBtn.disabled = true;
+    folderInput.disabled = true;
+    resetBtn.disabled = true;
+
+    const entries = [];
+    let done = 0, skipped = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const path = file.webkitRelativePath || file.name;
+      status.textContent = `처리 중 ${i + 1} / ${files.length} · ${file.name}`;
+      bar.style.width = `${Math.round((i / files.length) * 82)}%`;
+
+      try {
+        const input = new Uint8Array(await file.arrayBuffer());
+        let output;
+        const ext = extOf(file.name);
+
+        if (ext === "png") output = stripPng(input);
+        else if (ext === "jpg" || ext === "jpeg") output = stripJpeg(input);
+        else if (ext === "webp") output = stripWebp(input);
+        else throw new Error("지원하지 않는 형식");
+
+        entries.push({ name: path, data: output, date: file.lastModified ? new Date(file.lastModified) : new Date() });
+        done++;
+        countDone.textContent = done;
+        log(`✓ ${path}`);
+      } catch (e) {
+        skipped++;
+        countSkip.textContent = skipped;
+        log(`✗ ${path} — ${e.message || e}`);
+      }
+
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    if (!entries.length) {
+      status.textContent = "완료된 파일이 없습니다.";
+      bar.style.width = "0%";
+      runBtn.disabled = false;
+      folderInput.disabled = false;
+      resetBtn.disabled = false;
+      return;
+    }
+
+    status.textContent = "ZIP 생성 중…";
+    bar.style.width = "86%";
+    await new Promise(r => setTimeout(r, 20));
+
+    try {
+      const zipBlob = buildZip(entries, p => {
+        bar.style.width = `${86 + Math.round(p * 14)}%`;
+      });
+
+      const root = files[0]?.webkitRelativePath?.split("/")[0] || "images";
+      const zipName = `${root}_metadata_removed.zip`;
+
+      downloadUrl = URL.createObjectURL(zipBlob);
+      downloadLink.href = downloadUrl;
+      downloadLink.download = zipName;
+      downloadLink.textContent = `⬇ ${zipName} 다운로드`;
+      downloadArea.style.display = "block";
+
+      bar.style.width = "100%";
+      status.textContent = `완료 · ${done}개 처리 / ${skipped}개 건너뜀`;
+      log(`ZIP 생성 완료: ${zipName}`);
+    } catch (e) {
+      status.textContent = "ZIP 생성 실패";
+      log(`ZIP 오류 — ${e.message || e}`);
+    }
+
+    runBtn.disabled = false;
+    folderInput.disabled = false;
+    resetBtn.disabled = false;
+  });
+
+  // ---------- PNG ----------
+  function stripPng(bytes) {
+    const sig = [137,80,78,71,13,10,26,10];
+    if (bytes.length < 8 || !sig.every((v,i) => bytes[i] === v)) {
+      throw new Error("올바른 PNG가 아님");
+    }
+
+    const remove = new Set(["tEXt","zTXt","iTXt","eXIf","tIME"]);
+    const parts = [bytes.slice(0, 8)];
+    let off = 8;
+
+    while (off + 12 <= bytes.length) {
+      const len = readU32BE(bytes, off);
+      const end = off + 12 + len;
+      if (end > bytes.length) throw new Error("손상된 PNG 청크");
+
+      const type = ascii(bytes, off + 4, 4);
+      if (!remove.has(type)) parts.push(bytes.slice(off, end));
+      off = end;
+      if (type === "IEND") break;
+    }
+
+    return concat(parts);
+  }
+
+  // ---------- JPEG ----------
+  function stripJpeg(bytes) {
+    if (bytes.length < 4 || bytes[0] !== 0xFF || bytes[1] !== 0xD8) {
+      throw new Error("올바른 JPEG가 아님");
+    }
+
+    const parts = [bytes.slice(0, 2)];
+    let off = 2;
+
+    while (off < bytes.length) {
+      if (bytes[off] !== 0xFF) {
+        parts.push(bytes.slice(off));
+        break;
+      }
+
+      let markerStart = off;
+      while (off < bytes.length && bytes[off] === 0xFF) off++;
+      if (off >= bytes.length) break;
+
+      const marker = bytes[off++];
+      if (marker === 0xD9) {
+        parts.push(bytes.slice(markerStart, off));
+        break;
+      }
+      if (marker === 0xDA) {
+        if (off + 2 > bytes.length) throw new Error("손상된 JPEG SOS");
+        const segLen = readU16BE(bytes, off);
+        const scanStart = markerStart;
+        parts.push(bytes.slice(scanStart));
+        break;
+      }
+
+      // standalone markers
+      if ((marker >= 0xD0 && marker <= 0xD7) || marker === 0x01) {
+        parts.push(bytes.slice(markerStart, off));
+        continue;
+      }
+
+      if (off + 2 > bytes.length) throw new Error("손상된 JPEG 세그먼트");
+      const segLen = readU16BE(bytes, off);
+      const segEnd = off + segLen;
+      if (segLen < 2 || segEnd > bytes.length) throw new Error("손상된 JPEG 길이");
+
+      // APP1(EXIF/XMP), APP13(IPTC), COM 제거
+      const remove = marker === 0xE1 || marker === 0xED || marker === 0xFE;
+      if (!remove) parts.push(bytes.slice(markerStart, segEnd));
+      off = segEnd;
+    }
+
+    return concat(parts);
+  }
+
+  // ---------- WebP ----------
+  function stripWebp(bytes) {
+    if (bytes.length < 12 || ascii(bytes,0,4) !== "RIFF" || ascii(bytes,8,4) !== "WEBP") {
+      throw new Error("올바른 WebP가 아님");
+    }
+
+    const chunks = [];
+    let off = 12;
+
+    while (off + 8 <= bytes.length) {
+      const id = ascii(bytes, off, 4);
+      const size = readU32LE(bytes, off + 4);
+      const padded = size + (size & 1);
+      const end = off + 8 + padded;
+      if (end > bytes.length) throw new Error("손상된 WebP 청크");
+
+      if (id !== "EXIF" && id !== "XMP ") {
+        let chunk = bytes.slice(off, end);
+
+        // VP8X의 EXIF/XMP 존재 플래그 제거
+        if (id === "VP8X" && size >= 10) {
+          chunk = chunk.slice();
+          chunk[8] = chunk[8] & ~0x0C;
+        }
+        chunks.push(chunk);
+      }
+      off = end;
+    }
+
+    const body = concat(chunks);
+    const out = new Uint8Array(12 + body.length);
+    writeAscii(out, 0, "RIFF");
+    writeU32LE(out, 4, 4 + body.length); // WEBP + chunks
+    writeAscii(out, 8, "WEBP");
+    out.set(body, 12);
+    return out;
+  }
+
+  // ---------- ZIP (STORE / no compression) ----------
+  let crcTable = null;
+
+  function getCrcTable() {
+    if (crcTable) return crcTable;
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      }
+      crcTable[n] = c >>> 0;
+    }
+    return crcTable;
+  }
+
+  function crc32(data) {
+    const table = getCrcTable();
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < data.length; i++) {
+      c = table[(c ^ data[i]) & 0xFF] ^ (c >>> 8);
+    }
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function dosDateTime(date) {
+    let y = date.getFullYear();
+    if (y < 1980) y = 1980;
+    const time =
+      ((date.getHours() & 31) << 11) |
+      ((date.getMinutes() & 63) << 5) |
+      ((Math.floor(date.getSeconds()/2)) & 31);
+    const d =
+      (((y - 1980) & 127) << 9) |
+      (((date.getMonth()+1) & 15) << 5) |
+      (date.getDate() & 31);
+    return { time, date: d };
+  }
+
+  function buildZip(entries, onProgress) {
+    if (entries.length > 65535) throw new Error("ZIP64 미지원: 파일 수가 너무 많음");
+
+    const localParts = [];
+    const centralParts = [];
+    let offset = 0;
+
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const nameBytes = enc.encode(e.name.replace(/\\/g, "/"));
+      const data = e.data;
+      const crc = crc32(data);
+      const dt = dosDateTime(e.date || new Date());
+
+      if (data.length > 0xFFFFFFFF) throw new Error("ZIP64 미지원: 단일 파일이 4GB 초과");
+
+      const local = new Uint8Array(30 + nameBytes.length);
+      const lv = new DataView(local.buffer);
+      lv.setUint32(0, 0x04034b50, true);
+      lv.setUint16(4, 20, true);
+      lv.setUint16(6, 0x0800, true); // UTF-8
+      lv.setUint16(8, 0, true);      // STORE
+      lv.setUint16(10, dt.time, true);
+      lv.setUint16(12, dt.date, true);
+      lv.setUint32(14, crc, true);
+      lv.setUint32(18, data.length, true);
+      lv.setUint32(22, data.length, true);
+      lv.setUint16(26, nameBytes.length, true);
+      lv.setUint16(28, 0, true);
+      local.set(nameBytes, 30);
+
+      localParts.push(local, data);
+
+      const central = new Uint8Array(46 + nameBytes.length);
+      const cv = new DataView(central.buffer);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, 20, true);
+      cv.setUint16(6, 20, true);
+      cv.setUint16(8, 0x0800, true);
+      cv.setUint16(10, 0, true);
+      cv.setUint16(12, dt.time, true);
+      cv.setUint16(14, dt.date, true);
+      cv.setUint32(16, crc, true);
+      cv.setUint32(20, data.length, true);
+      cv.setUint32(24, data.length, true);
+      cv.setUint16(28, nameBytes.length, true);
+      cv.setUint16(30, 0, true);
+      cv.setUint16(32, 0, true);
+      cv.setUint16(34, 0, true);
+      cv.setUint16(36, 0, true);
+      cv.setUint32(38, 0, true);
+      cv.setUint32(42, offset, true);
+      central.set(nameBytes, 46);
+
+      centralParts.push(central);
+      offset += local.length + data.length;
+      if (onProgress) onProgress((i + 1) / entries.length * 0.7);
+    }
+
+    const centralOffset = offset;
+    const centralSize = centralParts.reduce((s,p) => s + p.length, 0);
+
+    if (centralOffset + centralSize > 0xFFFFFFFF) {
+      throw new Error("ZIP64 미지원: ZIP 크기가 4GB를 초과함");
+    }
+
+    const eocd = new Uint8Array(22);
+    const ev = new DataView(eocd.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(4, 0, true);
+    ev.setUint16(6, 0, true);
+    ev.setUint16(8, entries.length, true);
+    ev.setUint16(10, entries.length, true);
+    ev.setUint32(12, centralSize, true);
+    ev.setUint32(16, centralOffset, true);
+    ev.setUint16(20, 0, true);
+
+    if (onProgress) onProgress(1);
+    return new Blob([...localParts, ...centralParts, eocd], { type: "application/zip" });
+  }
+
+  // ---------- helpers ----------
+  function concat(parts) {
+    const len = parts.reduce((s,p) => s + p.length, 0);
+    const out = new Uint8Array(len);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  }
+
+  function ascii(bytes, off, len) {
+    let s = "";
+    for (let i=0;i<len;i++) s += String.fromCharCode(bytes[off+i]);
+    return s;
+  }
+
+  function writeAscii(bytes, off, str) {
+    for (let i=0;i<str.length;i++) bytes[off+i] = str.charCodeAt(i);
+  }
+
+  function readU16BE(b,o) { return (b[o] << 8) | b[o+1]; }
+  function readU32BE(b,o) { return ((b[o]*0x1000000) + (b[o+1]<<16) + (b[o+2]<<8) + b[o+3]) >>> 0; }
+  function readU32LE(b,o) { return (b[o] | (b[o+1]<<8) | (b[o+2]<<16) | (b[o+3]<<24)) >>> 0; }
+  function writeU32LE(b,o,v) {
+    b[o]=v&255; b[o+1]=(v>>>8)&255; b[o+2]=(v>>>16)&255; b[o+3]=(v>>>24)&255;
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+})();
+</script>
+</body>
+</html>
