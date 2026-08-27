@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NovelAI 메타데이터 완전 제거 → ZIP</title>
+<title>NovelAI 메타데이터 완전 제거</title>
 <style>
 :root{
   color-scheme:dark;
@@ -52,7 +52,7 @@ input[type=file]{display:none}
   margin-top:14px;padding:12px 14px;border:1px solid #5b4b2d;
   background:#231f17;border-radius:10px;color:#e7d5a7;font-size:12px;line-height:1.7
 }
-#downloadArea{display:none;margin-top:16px}
+#downloadArea{display:none;flex-wrap:wrap;gap:10px;margin-top:16px}
 .download{
   display:inline-block;text-decoration:none;background:var(--ok);color:#0c1712;
   padding:11px 16px;border-radius:10px;font-weight:800
@@ -62,11 +62,11 @@ input[type=file]{display:none}
 </head>
 <body>
 <div class="wrap">
-  <h1>NovelAI 메타데이터 완전 제거 → ZIP</h1>
+  <h1>NovelAI 메타데이터 완전 제거</h1>
   <p class="desc">
-    폴더를 선택하면 일반 PNG 메타데이터뿐 아니라
-    <b>NovelAI의 stealth alpha-channel 메타데이터</b>도 제거한 뒤
-    폴더 구조와 파일명을 유지해 ZIP으로 묶습니다.
+    폴더나 개별 이미지를 선택하면 일반 PNG 메타데이터뿐 아니라
+    <b>NovelAI의 stealth alpha-channel 메타데이터</b>도 제거합니다.
+    폴더는 구조를 유지해 ZIP으로, 개별 이미지는 파일별로 바로 다운로드됩니다.
   </p>
 
   <div class="card">
@@ -74,11 +74,14 @@ input[type=file]{display:none}
       <label for="folderInput" class="fakeBtn primary">📁 폴더 선택</label>
       <input id="folderInput" type="file" webkitdirectory multiple
              accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">
-      <button id="runBtn" class="secondary" disabled>완전 제거 + ZIP 만들기</button>
+      <label for="fileInput" class="fakeBtn primary">🖼 이미지 선택</label>
+      <input id="fileInput" type="file" multiple
+             accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">
+      <button id="runBtn" class="secondary" disabled>완전 제거 실행</button>
       <button id="resetBtn" class="secondary" disabled>초기화</button>
     </div>
 
-    <div class="info" id="folderInfo">아직 폴더를 선택하지 않았습니다.</div>
+    <div class="info" id="folderInfo">아직 선택된 항목이 없습니다.</div>
 
     <div class="stats">
       <div class="stat"><span>이미지</span><b id="countAll">0</b></div>
@@ -89,9 +92,7 @@ input[type=file]{display:none}
     <div class="progress"><div class="bar" id="bar"></div></div>
     <div id="status">대기 중</div>
 
-    <div id="downloadArea">
-      <a id="downloadLink" class="download" href="#">⬇ ZIP 다운로드</a>
-    </div>
+    <div id="downloadArea"></div>
 
     <div id="log">준비됨.</div>
 
@@ -110,6 +111,7 @@ input[type=file]{display:none}
 
 const $ = id => document.getElementById(id);
 const folderInput = $("folderInput");
+const fileInput = $("fileInput");
 const runBtn = $("runBtn");
 const resetBtn = $("resetBtn");
 const folderInfo = $("folderInfo");
@@ -120,11 +122,11 @@ const bar = $("bar");
 const status = $("status");
 const logEl = $("log");
 const downloadArea = $("downloadArea");
-const downloadLink = $("downloadLink");
 
 const enc = new TextEncoder();
 let files = [];
-let downloadUrl = null;
+let mode = "folder";           // "folder" | "files"
+let downloadUrls = [];
 
 function log(s){
   logEl.textContent += "\n" + s;
@@ -137,10 +139,29 @@ function extOf(name){
 function supported(f){
   return ["png","jpg","jpeg","webp"].includes(extOf(f.name));
 }
+function mimeOf(ext){
+  return ext==="png" ? "image/png"
+    : (ext==="jpg"||ext==="jpeg") ? "image/jpeg"
+    : ext==="webp" ? "image/webp"
+    : "application/octet-stream";
+}
 function revoke(){
-  if(downloadUrl) URL.revokeObjectURL(downloadUrl);
-  downloadUrl = null;
+  for(const u of downloadUrls) URL.revokeObjectURL(u);
+  downloadUrls = [];
+  downloadArea.innerHTML = "";
   downloadArea.style.display = "none";
+}
+function addDownload(name, blob){
+  const url = URL.createObjectURL(blob);
+  downloadUrls.push(url);
+  const a = document.createElement("a");
+  a.className = "download";
+  a.href = url;
+  a.download = name;
+  a.textContent = `⬇ ${name}`;
+  downloadArea.appendChild(a);
+  downloadArea.style.display = "flex";
+  return a;
 }
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g,c=>(
@@ -148,36 +169,55 @@ function escapeHtml(s){
   ));
 }
 
-folderInput.addEventListener("change",()=>{
+function applySelection(fileList, selMode){
   revoke();
-  files = Array.from(folderInput.files || []).filter(supported);
-  const root = files[0]?.webkitRelativePath?.split("/")[0] || "선택 폴더";
-  folderInfo.innerHTML = files.length
-    ? `<b>${escapeHtml(root)}</b> · ${files.length}개`
-    : "지원되는 이미지가 없습니다.";
+  files = Array.from(fileList || []).filter(supported);
+  mode = selMode;
+
+  if(selMode==="folder"){
+    const root = files[0]?.webkitRelativePath?.split("/")[0] || "선택 폴더";
+    folderInfo.innerHTML = files.length
+      ? `📁 <b>${escapeHtml(root)}</b> · ${files.length}개`
+      : "지원되는 이미지가 없습니다.";
+    logEl.textContent = files.length
+      ? `선택됨: ${root}\nPNG: 일반 메타 + NovelAI stealth 제거\nJPG/WebP: 일반 메타 제거`
+      : "준비됨.";
+  }else{
+    folderInfo.innerHTML = files.length
+      ? `🖼 이미지 <b>${files.length}</b>개 선택됨`
+      : "지원되는 이미지가 없습니다.";
+    logEl.textContent = files.length
+      ? `이미지 ${files.length}개 선택\nPNG: 일반 메타 + NovelAI stealth 제거\nJPG/WebP: 일반 메타 제거`
+      : "준비됨.";
+  }
+
   countAll.textContent = files.length;
   countDone.textContent = "0";
   countSkip.textContent = "0";
   bar.style.width = "0%";
   status.textContent = files.length ? "처리 준비 완료" : "대기 중";
-  logEl.textContent = files.length
-    ? `선택됨: ${root}\nPNG: 일반 메타 + NovelAI stealth 제거\nJPG/WebP: 일반 메타 제거`
-    : "준비됨.";
+  runBtn.textContent = selMode==="folder" ? "완전 제거 + ZIP 만들기" : "완전 제거 + 다운로드";
   runBtn.disabled = !files.length;
   resetBtn.disabled = false;
-});
+}
+
+folderInput.addEventListener("change",()=>applySelection(folderInput.files,"folder"));
+fileInput.addEventListener("change",()=>applySelection(fileInput.files,"files"));
 
 resetBtn.addEventListener("click",()=>{
   revoke();
   files=[];
+  mode="folder";
   folderInput.value="";
-  folderInfo.textContent="아직 폴더를 선택하지 않았습니다.";
+  fileInput.value="";
+  folderInfo.textContent="아직 선택된 항목이 없습니다.";
   countAll.textContent="0";
   countDone.textContent="0";
   countSkip.textContent="0";
   bar.style.width="0%";
   status.textContent="대기 중";
   logEl.textContent="준비됨.";
+  runBtn.textContent="완전 제거 실행";
   runBtn.disabled=true;
   resetBtn.disabled=true;
 });
@@ -189,6 +229,7 @@ runBtn.addEventListener("click", async ()=>{
   runBtn.disabled=true;
   resetBtn.disabled=true;
   folderInput.disabled=true;
+  fileInput.disabled=true;
 
   const entries=[];
   let done=0, skip=0;
@@ -233,38 +274,50 @@ runBtn.addEventListener("click", async ()=>{
   if(!entries.length){
     status.textContent="처리 완료 파일 없음";
     folderInput.disabled=false;
+    fileInput.disabled=false;
     runBtn.disabled=false;
     resetBtn.disabled=false;
     return;
   }
 
-  status.textContent="ZIP 생성 중…";
-  bar.style.width="84%";
-  await new Promise(r=>setTimeout(r,20));
-
   try{
-    const blob=buildZip(entries,p=>{
-      bar.style.width=`${84+Math.round(p*16)}%`;
-    });
+    if(mode==="files"){
+      status.textContent="다운로드 준비 중…";
+      await new Promise(r=>setTimeout(r,20));
 
-    const root=files[0]?.webkitRelativePath?.split("/")[0] || "images";
-    const zipName=`${root}_NAI_metadata_removed.zip`;
+      for(const e of entries){
+        const fname=e.name.split("/").pop();
+        addDownload(fname, new Blob([e.data],{type:mimeOf(extOf(fname))}));
+      }
 
-    downloadUrl=URL.createObjectURL(blob);
-    downloadLink.href=downloadUrl;
-    downloadLink.download=zipName;
-    downloadLink.textContent=`⬇ ${zipName} 다운로드`;
-    downloadArea.style.display="block";
+      bar.style.width="100%";
+      status.textContent=`완료 · ${done}개 처리 / ${skip}개 오류`;
+      log(entries.length===1 ? "다운로드 준비 완료" : `${entries.length}개 다운로드 링크 생성`);
+    }else{
+      status.textContent="ZIP 생성 중…";
+      bar.style.width="84%";
+      await new Promise(r=>setTimeout(r,20));
 
-    bar.style.width="100%";
-    status.textContent=`완료 · ${done}개 처리 / ${skip}개 오류`;
-    log(`ZIP 생성 완료: ${zipName}`);
+      const blob=buildZip(entries,p=>{
+        bar.style.width=`${84+Math.round(p*16)}%`;
+      });
+
+      const root=files[0]?.webkitRelativePath?.split("/")[0] || "images";
+      const zipName=`${root}_NAI_metadata_removed.zip`;
+
+      addDownload(zipName, blob);
+
+      bar.style.width="100%";
+      status.textContent=`완료 · ${done}개 처리 / ${skip}개 오류`;
+      log(`ZIP 생성 완료: ${zipName}`);
+    }
   }catch(e){
-    status.textContent="ZIP 생성 실패";
-    log(`ZIP 오류 — ${e?.message || e}`);
+    status.textContent = mode==="files" ? "다운로드 생성 실패" : "ZIP 생성 실패";
+    log(`오류 — ${e?.message || e}`);
   }
 
   folderInput.disabled=false;
+  fileInput.disabled=false;
   runBtn.disabled=false;
   resetBtn.disabled=false;
 });
