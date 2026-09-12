@@ -57,6 +57,25 @@ input[type=file]{display:none}
   display:inline-block;text-decoration:none;background:var(--ok);color:#0c1712;
   padding:11px 16px;border-radius:10px;font-weight:800
 }
+.dropzone{
+  margin-top:16px;padding:30px 18px;border:2px dashed #454b5a;border-radius:14px;
+  background:#14161c;text-align:center;cursor:pointer;user-select:none;
+  transition:border-color .15s,background .15s,transform .15s
+}
+.dropzone:hover,.dropzone:focus{border-color:var(--accent);outline:none}
+.dropzone.dragover{
+  border-color:var(--accent);background:#1c1930;transform:translateY(-1px)
+}
+.dropzone .icon{display:block;font-size:30px;margin-bottom:7px}
+.dropzone b{font-size:15px}
+.dropzone small{display:block;color:var(--muted);margin-top:6px;line-height:1.5}
+.options{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;
+  padding:11px 13px;background:#14161c;border:1px solid var(--line);border-radius:10px
+}
+.toggle{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;cursor:pointer}
+.toggle input{accent-color:var(--accent);width:17px;height:17px}
+.nextName{color:var(--muted);font-size:12px}
 @media(max-width:600px){.stats{grid-template-columns:1fr}.wrap{margin-top:25px}}
 </style>
 </head>
@@ -66,7 +85,7 @@ input[type=file]{display:none}
   <p class="desc">
     폴더나 개별 이미지를 선택하면 일반 PNG 메타데이터뿐 아니라
     <b>NovelAI의 stealth alpha-channel 메타데이터</b>도 제거합니다.
-    폴더는 구조를 유지해 ZIP으로, 개별 이미지는 파일별로 바로 다운로드됩니다.
+    폴더는 구조를 유지해 ZIP으로, 개별 이미지는 드래그&드롭할 수 있으며 처리 후 자동저장할 수 있습니다.
   </p>
 
   <div class="card">
@@ -79,6 +98,20 @@ input[type=file]{display:none}
              accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">
       <button id="runBtn" class="secondary" disabled>완전 제거 실행</button>
       <button id="resetBtn" class="secondary" disabled>초기화</button>
+    </div>
+
+    <div id="dropZone" class="dropzone" role="button" tabindex="0" aria-label="이미지를 여기로 끌어다 놓기">
+      <span class="icon">⇩</span>
+      <b>이미지를 여기로 끌어다 놓으세요</b>
+      <small>PNG · JPG · JPEG · WebP / 클릭해서 이미지 선택도 가능</small>
+    </div>
+
+    <div class="options">
+      <label class="toggle">
+        <input id="autoSave" type="checkbox" checked>
+        처리 후 자동저장
+      </label>
+      <span class="nextName" id="nextName">다음 자동저장 이름: img1</span>
     </div>
 
     <div class="info" id="folderInfo">아직 선택된 항목이 없습니다.</div>
@@ -100,7 +133,9 @@ input[type=file]{display:none}
       PNG는 브라우저에서 픽셀을 다시 읽어 NovelAI가 사용하는 알파값 254를 255로 정규화합니다.
       RGB 색상은 유지하며 NAI stealth bitstream을 깨뜨립니다.
       실제 투명 PNG에서 알파값 254를 의도적으로 사용한 픽셀은 255로 바뀔 수 있으므로,
-      이 도구는 주로 NovelAI 생성 이미지용으로 사용하세요.
+      이 도구는 주로 NovelAI 생성 이미지용으로 사용하세요.<br>
+      자동저장은 브라우저 다운로드 기능을 사용하므로, 처음 여러 장을 저장할 때
+      <b>여러 파일 자동 다운로드 허용</b> 메시지가 뜨면 허용해야 합니다.
     </div>
   </div>
 </div>
@@ -122,15 +157,44 @@ const bar = $("bar");
 const status = $("status");
 const logEl = $("log");
 const downloadArea = $("downloadArea");
+const dropZone = $("dropZone");
+const autoSave = $("autoSave");
+const nextName = $("nextName");
 
 const enc = new TextEncoder();
 let files = [];
 let mode = "folder";           // "folder" | "files"
 let downloadUrls = [];
+let fallbackAutoIndex = 1;
+const AUTO_INDEX_KEY = "naiMetadataCleanerAutoIndex";
 
 function log(s){
   logEl.textContent += "\n" + s;
   logEl.scrollTop = logEl.scrollHeight;
+}
+function getAutoIndex(){
+  try{
+    const n = parseInt(localStorage.getItem(AUTO_INDEX_KEY) || "1",10);
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  }catch(_){
+    return fallbackAutoIndex;
+  }
+}
+function setAutoIndex(n){
+  fallbackAutoIndex = n;
+  try{ localStorage.setItem(AUTO_INDEX_KEY,String(n)); }catch(_){}
+}
+function updateNextName(){
+  nextName.textContent = `다음 자동저장 이름: img${getAutoIndex()}`;
+}
+function takeAutoName(ext){
+  const n = getAutoIndex();
+  setAutoIndex(n+1);
+  updateNextName();
+  return `img${n}.${ext}`;
+}
+function sleep(ms){
+  return new Promise(r=>setTimeout(r,ms));
 }
 function extOf(name){
   const m = name.toLowerCase().match(/\.([^.]+)$/);
@@ -162,6 +226,9 @@ function addDownload(name, blob){
   downloadArea.appendChild(a);
   downloadArea.style.display = "flex";
   return a;
+}
+function triggerDownload(a){
+  a.click();
 }
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g,c=>(
@@ -196,13 +263,45 @@ function applySelection(fileList, selMode){
   countSkip.textContent = "0";
   bar.style.width = "0%";
   status.textContent = files.length ? "처리 준비 완료" : "대기 중";
-  runBtn.textContent = selMode==="folder" ? "완전 제거 + ZIP 만들기" : "완전 제거 + 다운로드";
+  runBtn.textContent = selMode==="folder" ? "완전 제거 + ZIP 만들기" : "완전 제거 + 자동저장";
   runBtn.disabled = !files.length;
   resetBtn.disabled = false;
 }
 
 folderInput.addEventListener("change",()=>applySelection(folderInput.files,"folder"));
 fileInput.addEventListener("change",()=>applySelection(fileInput.files,"files"));
+
+// 드래그 & 드롭: 파일을 놓으면 개별 이미지 모드로 선택합니다.
+["dragenter","dragover"].forEach(type=>{
+  dropZone.addEventListener(type,e=>{
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.classList.add("dragover");
+  });
+});
+["dragleave","drop"].forEach(type=>{
+  dropZone.addEventListener(type,e=>{
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.classList.remove("dragover");
+  });
+});
+dropZone.addEventListener("drop",e=>{
+  const dropped = Array.from(e.dataTransfer?.files || []).filter(supported);
+  applySelection(dropped,"files");
+});
+dropZone.addEventListener("click",()=>fileInput.click());
+dropZone.addEventListener("keydown",e=>{
+  if(e.key==="Enter" || e.key===" "){
+    e.preventDefault();
+    fileInput.click();
+  }
+});
+
+autoSave.addEventListener("change",()=>{
+  log(autoSave.checked ? "자동저장 켜짐" : "자동저장 꺼짐 — 다운로드 링크만 생성");
+});
+updateNextName();
 
 resetBtn.addEventListener("click",()=>{
   revoke();
@@ -282,17 +381,32 @@ runBtn.addEventListener("click", async ()=>{
 
   try{
     if(mode==="files"){
-      status.textContent="다운로드 준비 중…";
-      await new Promise(r=>setTimeout(r,20));
+      status.textContent=autoSave.checked ? "자동저장 중…" : "다운로드 준비 중…";
+      await sleep(20);
 
+      let autoSaved = 0;
       for(const e of entries){
-        const fname=e.name.split("/").pop();
-        addDownload(fname, new Blob([e.data],{type:mimeOf(extOf(fname))}));
+        const originalName=e.name.split("/").pop();
+        const ext=extOf(originalName);
+        const saveName=autoSave.checked ? takeAutoName(ext) : originalName;
+        const a=addDownload(saveName, new Blob([e.data],{type:mimeOf(ext)}));
+
+        if(autoSave.checked){
+          triggerDownload(a);
+          autoSaved++;
+          // 여러 파일 자동 다운로드가 브라우저에 의해 누락되지 않도록 약간의 간격을 둡니다.
+          await sleep(120);
+        }
       }
 
       bar.style.width="100%";
       status.textContent=`완료 · ${done}개 처리 / ${skip}개 오류`;
-      log(entries.length===1 ? "다운로드 준비 완료" : `${entries.length}개 다운로드 링크 생성`);
+      if(autoSave.checked){
+        log(`자동저장 요청 완료: ${autoSaved}개 · img 번호는 다음 실행에도 이어집니다.`);
+        log("※ 브라우저가 '여러 파일 자동 다운로드' 권한을 물으면 허용해 주세요.");
+      }else{
+        log(entries.length===1 ? "다운로드 준비 완료" : `${entries.length}개 다운로드 링크 생성`);
+      }
     }else{
       status.textContent="ZIP 생성 중…";
       bar.style.width="84%";
